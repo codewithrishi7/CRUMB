@@ -14,19 +14,21 @@ export default function DiscCarousel({ onAddToCart, onNavigateToProduct, onExplo
   const activeIndexRef = useRef(0);
   const smoothIndexRef = useRef(0);
   const targetIndexRef = useRef(0);
+  const dimensionsRef = useRef({ top: 0, travel: 1 });
 
   // Sync activeIndex ref
   useEffect(() => {
     activeIndexRef.current = activeIndex;
   }, [activeIndex]);
 
-  // Smooth lerp loop for disc sliding animation
+  // High-performance smooth lerp loop for disc sliding animation
   useEffect(() => {
     let animId;
     const update = () => {
       const diff = targetIndexRef.current - smoothIndexRef.current;
       if (Math.abs(diff) > 0.001) {
-        smoothIndexRef.current += diff * 0.16; // buttery smooth easing
+        // Responsive 0.35 lerp gives silky feel with zero sluggishness/lag
+        smoothIndexRef.current += diff * 0.35;
         setSmoothIndex(smoothIndexRef.current);
       } else if (smoothIndexRef.current !== targetIndexRef.current) {
         smoothIndexRef.current = targetIndexRef.current;
@@ -38,21 +40,27 @@ export default function DiscCarousel({ onAddToCart, onNavigateToProduct, onExplo
     return () => cancelAnimationFrame(animId);
   }, []);
 
-  // Calculate sticky scroll progress based on page scroll position
-  const handleScroll = useCallback(() => {
+  // Cache scroll wrapper dimensions to avoid layout thrashing on every scroll tick
+  const updateDimensions = useCallback(() => {
     if (!scrollWrapperRef.current || !stickyContainerRef.current) return;
-
     const rect = scrollWrapperRef.current.getBoundingClientRect();
+    const currentScrollY = window.scrollY || window.pageYOffset;
+    const wrapperTopFromDoc = currentScrollY + rect.top;
     const stickyTop = 72; // height of sticky navbar
     const wrapperHeight = scrollWrapperRef.current.offsetHeight;
     const stickyHeight = stickyContainerRef.current.offsetHeight;
-    const maxTravel = wrapperHeight - stickyHeight;
+    dimensionsRef.current = {
+      top: wrapperTopFromDoc - stickyTop,
+      travel: Math.max(1, wrapperHeight - stickyHeight)
+    };
+  }, []);
 
-    if (maxTravel <= 0) return;
-
-    // How far we have scrolled into the wrapper past stickyTop
-    const scrolledDistance = stickyTop - rect.top;
-    const rawProgress = scrolledDistance / maxTravel;
+  // Ultra fast scroll listener (reads window.scrollY directly without DOM recalculations)
+  const handleScroll = useCallback(() => {
+    const scrollY = window.scrollY || window.pageYOffset;
+    const { top, travel } = dimensionsRef.current;
+    const scrolledDistance = scrollY - top;
+    const rawProgress = scrolledDistance / travel;
     const clampedProgress = Math.max(0, Math.min(1, rawProgress));
 
     // Continuous floating target index across all 8 cakes (0.0 to 7.0)
@@ -67,40 +75,39 @@ export default function DiscCarousel({ onAddToCart, onNavigateToProduct, onExplo
     }
   }, [cakeProducts.length]);
 
-  // Scroll listener
+  // Initialize and listen to scroll and resize
   useEffect(() => {
+    updateDimensions();
     handleScroll();
+
+    const onResize = () => {
+      updateDimensions();
+      handleScroll();
+    };
+
     window.addEventListener('scroll', handleScroll, { passive: true });
-    window.addEventListener('resize', handleScroll, { passive: true });
+    window.addEventListener('resize', onResize, { passive: true });
 
     return () => {
       window.removeEventListener('scroll', handleScroll);
-      window.removeEventListener('resize', handleScroll);
+      window.removeEventListener('resize', onResize);
     };
-  }, [handleScroll]);
+  }, [handleScroll, updateDimensions]);
 
   // Jump / smooth-scroll to specific cake index in document scroll track
   const scrollToCake = useCallback((index) => {
-    if (!scrollWrapperRef.current || !stickyContainerRef.current) return;
-
+    updateDimensions();
     const cakeCount = cakeProducts.length;
     const clampedIndex = Math.max(0, Math.min(cakeCount - 1, index));
-    const rect = scrollWrapperRef.current.getBoundingClientRect();
-    const currentScrollY = window.scrollY || window.pageYOffset;
-    const wrapperTopFromDoc = currentScrollY + rect.top;
-    const stickyTop = 72;
-    const wrapperHeight = scrollWrapperRef.current.offsetHeight;
-    const stickyHeight = stickyContainerRef.current.offsetHeight;
-    const maxTravel = wrapperHeight - stickyHeight;
-
+    const { top, travel } = dimensionsRef.current;
     const targetProgress = clampedIndex / (cakeCount - 1);
-    const targetScrollY = (wrapperTopFromDoc - stickyTop) + (targetProgress * maxTravel);
+    const targetScrollY = top + (targetProgress * travel);
 
     window.scrollTo({
       top: Math.max(0, targetScrollY),
       behavior: 'smooth'
     });
-  }, [cakeProducts.length]);
+  }, [cakeProducts.length, updateDimensions]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -129,8 +136,7 @@ export default function DiscCarousel({ onAddToCart, onNavigateToProduct, onExplo
   // Current active product for panel
   const activeProduct = cakeProducts[activeIndex] || cakeProducts[0];
 
-  // Helper to calculate disc positions along diagonal cascade
-  // As smoothIndex increases (scrolling down), effectiveDiff decreases (moves left)
+  // Helper to calculate disc positions along diagonal cascade with hardware acceleration
   const getDiscStyle = (index) => {
     const effectiveDiff = index - smoothIndex;
 
@@ -145,7 +151,7 @@ export default function DiscCarousel({ onAddToCart, onNavigateToProduct, onExplo
     return {
       left: `${xBase}%`,
       top: `calc(50% + ${yBase}%)`,
-      transform: `translate(-50%, -50%) rotate(${rotation}deg) scale(${scale})`,
+      transform: `translate3d(-50%, -50%, 0) rotate(${rotation}deg) scale(${scale})`,
       zIndex,
       opacity,
       width: 'clamp(280px, 34vw, 460px)',
@@ -159,14 +165,11 @@ export default function DiscCarousel({ onAddToCart, onNavigateToProduct, onExplo
     const ctaStrip = document.getElementById('hero-cta-strip');
     if (ctaStrip) {
       ctaStrip.scrollIntoView({ behavior: 'smooth' });
-    } else if (scrollWrapperRef.current && stickyContainerRef.current) {
-      const rect = scrollWrapperRef.current.getBoundingClientRect();
-      const currentScrollY = window.scrollY || window.pageYOffset;
-      const wrapperTopFromDoc = currentScrollY + rect.top;
-      const wrapperHeight = scrollWrapperRef.current.offsetHeight;
-      const stickyTop = 72;
+    } else {
+      updateDimensions();
+      const { top, travel } = dimensionsRef.current;
       window.scrollTo({
-        top: wrapperTopFromDoc + wrapperHeight - stickyTop + 20,
+        top: top + travel + 60,
         behavior: 'smooth'
       });
     }
